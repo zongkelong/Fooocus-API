@@ -1,4 +1,5 @@
 import copy
+import os
 import random
 import time
 import numpy as np
@@ -10,8 +11,11 @@ from typing import List
 from fooocusapi.file_utils import save_output_file
 from fooocusapi.parameters import GenerationFinishReason, ImageGenerationResult
 from fooocusapi.task_queue import QueueTask, TaskQueue, TaskOutputs
+from modules.patch import PatchSettings, patch_settings
+from modules.sdxl_styles import apply_arrays
 
 worker_queue: TaskQueue = None
+last_model_name = None
 
 def process_top():
     import ldm_patched.modules.model_management
@@ -68,7 +72,7 @@ def process_generate(async_task: QueueTask):
     import modules.core as core
     import modules.inpaint_worker as inpaint_worker
     import modules.config as config
-    import modules.advanced_parameters as advanced_parameters
+    import fooocusapi.adv_para as advanced_parameters
     import modules.constants as constants
     import extras.preprocessors as preprocessors
     import extras.ip_adapter as ip_adapter
@@ -80,6 +84,8 @@ def process_generate(async_task: QueueTask):
     from extras.expansion import safe_str
     from modules.sdxl_styles import apply_style, fooocus_expansion, apply_wildcards
     import fooocus_version
+
+    pid = os.getpid()
 
     outputs = TaskOutputs(async_task)
     results = []
@@ -100,14 +106,14 @@ def process_generate(async_task: QueueTask):
         print(f'[Fooocus] {text}')
         outputs.append(['preview', (number, text, None)])
 
-    def yield_result(_, imgs, tasks):
+    def yield_result(_, imgs, tasks, extension='png'):
         if not isinstance(imgs, list):
             imgs = [imgs]
 
         results = []
         for i, im in enumerate(imgs):
             seed = -1 if len(tasks) == 0 else tasks[i]['task_seed']
-            img_filename = save_output_file(im)
+            img_filename = save_output_file(img=im, extension=extension)
             results.append(ImageGenerationResult(im=img_filename, seed=str(seed), finish_reason=GenerationFinishReason.success))
         async_task.set_result(results, False)
         worker_queue.finish_task(async_task.job_id)
@@ -118,6 +124,17 @@ def process_generate(async_task: QueueTask):
 
     try:
         print(f"[Task Queue] Task queue start task, job_id={async_task.job_id}")
+        # clear memory
+        global last_model_name
+
+        if last_model_name is None:
+            last_model_name = async_task.req_param.base_model_name
+        if last_model_name != async_task.req_param.base_model_name:
+            model_management.cleanup_models() # key1
+            model_management.unload_all_models()
+            model_management.soft_empty_cache() # key2
+            last_model_name = async_task.req_param.base_model_name
+
         worker_queue.start_task(async_task.job_id)
 
         execution_start_time = time.perf_counter()
@@ -150,6 +167,7 @@ def process_generate(async_task: QueueTask):
         inpaint_input_image = params.inpaint_input_image
         inpaint_additional_prompt = params.inpaint_additional_prompt
         inpaint_mask_image_upload = None
+        save_extension = params.save_extension
 
         if inpaint_additional_prompt is None:
             inpaint_additional_prompt = ''
@@ -238,6 +256,19 @@ def process_generate(async_task: QueueTask):
 
         cfg_scale = float(guidance_scale)
         print(f'[Parameters] CFG = {cfg_scale}')
+
+        # todo: this two are params
+        read_wildcards_in_order = False
+        controlnet_softness = 0.25
+
+        patch_settings[pid] = PatchSettings(
+            sharpness,
+            advanced_parameters.adm_scaler_end,
+            advanced_parameters.adm_scaler_positive,
+            advanced_parameters.adm_scaler_negative,
+            controlnet_softness,
+            advanced_parameters.adaptive_cfg
+        )
 
         initial_latent = None
         denoising_strength = 1.0
@@ -412,10 +443,11 @@ def process_generate(async_task: QueueTask):
                 task_seed = (seed + i) % (constants.MAX_SEED + 1)  # randint is inclusive, % is not
                 task_rng = random.Random(task_seed)  # may bind to inpaint noise in the future
 
-                task_prompt = apply_wildcards(prompt, task_rng)
-                task_negative_prompt = apply_wildcards(negative_prompt, task_rng)
-                task_extra_positive_prompts = [apply_wildcards(pmt, task_rng) for pmt in extra_positive_prompts]
-                task_extra_negative_prompts = [apply_wildcards(pmt, task_rng) for pmt in extra_negative_prompts]
+                task_prompt = apply_wildcards(prompt, task_rng, i, read_wildcards_in_order)
+                task_prompt = apply_arrays(task_prompt, i)
+                task_negative_prompt = apply_wildcards(negative_prompt, task_rng, i, read_wildcards_in_order)
+                task_extra_positive_prompts = [apply_wildcards(pmt, task_rng, i, read_wildcards_in_order) for pmt in extra_positive_prompts]
+                task_extra_negative_prompts = [apply_wildcards(pmt, task_rng, i, read_wildcards_in_order) for pmt in extra_negative_prompts]
 
                 positive_basic_workloads = []
                 negative_basic_workloads = []
@@ -546,8 +578,8 @@ def process_generate(async_task: QueueTask):
 
             if direct_return:
                 d = [('Upscale (Fast)', '2x')]
-                log(uov_input_image, d)
-                yield_result(async_task, uov_input_image, tasks)
+                log(uov_input_image, d, output_format=save_extension)
+                yield_result(async_task, uov_input_image, tasks, save_extension)
                 return
 
             tiled = True
@@ -693,7 +725,7 @@ def process_generate(async_task: QueueTask):
                 cn_img = HWC3(cn_img)
                 task[0] = core.numpy_to_pytorch(cn_img)
                 if advanced_parameters.debugging_cn_preprocessor:
-                    yield_result(async_task, cn_img, tasks)
+                    yield_result(async_task, cn_img, tasks, save_extension)
                     return
             for task in cn_tasks[flags.cn_cpds]:
                 cn_img, cn_stop, cn_weight = task
@@ -705,7 +737,7 @@ def process_generate(async_task: QueueTask):
                 cn_img = HWC3(cn_img)
                 task[0] = core.numpy_to_pytorch(cn_img)
                 if advanced_parameters.debugging_cn_preprocessor:
-                    yield_result(async_task, cn_img, tasks)
+                    yield_result(async_task, cn_img, tasks, save_extension)
                     return
             for task in cn_tasks[flags.cn_ip]:
                 cn_img, cn_stop, cn_weight = task
@@ -716,7 +748,7 @@ def process_generate(async_task: QueueTask):
 
                 task[0] = ip_adapter.preprocess(cn_img, ip_adapter_path=ip_adapter_path)
                 if advanced_parameters.debugging_cn_preprocessor:
-                    yield_result(async_task, cn_img, tasks)
+                    yield_result(async_task, cn_img, tasks, save_extension)
                     return
             for task in cn_tasks[flags.cn_ip_face]:
                 cn_img, cn_stop, cn_weight = task
@@ -730,7 +762,7 @@ def process_generate(async_task: QueueTask):
 
                 task[0] = ip_adapter.preprocess(cn_img, ip_adapter_path=ip_adapter_face_path)
                 if advanced_parameters.debugging_cn_preprocessor:
-                    yield_result(async_task, cn_img, tasks)
+                    yield_result(async_task, cn_img, tasks, save_extension)
                     return
 
             all_ip_tasks = cn_tasks[flags.cn_ip] + cn_tasks[flags.cn_ip_face]
@@ -852,7 +884,7 @@ def process_generate(async_task: QueueTask):
                         if n != 'None':
                             d.append((f'LoRA', f'{n} : {w}'))
                     d.append(('Version', 'v' + fooocus_version.version))
-                    log(x, d)
+                    log(x, d, output_format=save_extension)
                 
                 # Fooocus async_worker.py code end
                 
@@ -877,7 +909,7 @@ def process_generate(async_task: QueueTask):
         if async_task.finish_with_error:
             worker_queue.finish_task(async_task.job_id)
             return async_task.task_result
-        yield_result(None, results, tasks)
+        yield_result(None, results, tasks, save_extension)
         return
     except Exception as e:
         print('Worker error:', e)

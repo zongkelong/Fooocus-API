@@ -167,6 +167,7 @@ def req_to_params(req: Text2ImgRequest) -> ImageGenerationParams:
                                  inpaint_additional_prompt=inpaint_additional_prompt,
                                  image_prompts=image_prompts,
                                  advanced_params=advanced_params,
+                                 save_extension=req.save_extension,
                                  require_base64=req.require_base64,
                                  )
 
@@ -212,7 +213,7 @@ def generate_image_result_output(results: List[ImageGenerationResult], require_b
     results = [GeneratedImageResult(
             base64=output_file_to_base64img(item.im) if require_base64 else None,
             url=get_file_serve_url(item.im),
-            seed=item.seed,
+            seed=str(item.seed),
             finish_reason=item.finish_reason) for item in results]
     return results
 

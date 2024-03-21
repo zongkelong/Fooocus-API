@@ -21,10 +21,10 @@ from fooocusapi.parameters import (GenerationFinishReason,
                                    default_scheduler)
 
 from fooocusapi.task_queue import TaskType
-from parameters import ImageGenerationResult
 
 
 class Lora(BaseModel):
+    enabled: bool
     model_name: str
     weight: float = Field(default=0.5, ge=-2, le=2)
 
@@ -34,7 +34,7 @@ class Lora(BaseModel):
 
 
 LoraList = TypeAdapter(List[Lora])
-default_loras_model = [Lora(model_name=lora[0], weight=lora[1]) for lora in default_loras if lora[0] != 'None']
+default_loras_model = [Lora(enabled=lora[0], model_name=lora[1], weight=lora[2]) for lora in default_loras if lora[0] != 'None']
 default_loras_json = LoraList.dump_json(default_loras_model)
 
 
@@ -124,6 +124,7 @@ class Text2ImgRequest(BaseModel):
     refiner_switch: float = Field(default=default_refiner_switch, description="Refiner Switch At", ge=0.1, le=1.0)
     loras: List[Lora] = Field(default=default_loras_model)
     advanced_params: AdvancedParams | None = AdvancedParams()
+    save_extension: str = Field(default='png', description="Save extension, one of [png, jpg, webp]")
     require_base64: bool = Field(default=False, description="Return base64 data of generated image")
     async_process: bool = Field(default=False, description="Set to true will run async and return job info for retrieve generataion result later")
     webhook_url: str | None = Field(default='', description="Optional URL for a webhook callback. If provided, the system will send a POST request to this URL upon task completion or failure."
@@ -215,6 +216,7 @@ class ImgUpscaleOrVaryRequest(Text2ImgRequest):
                 refiner_switch: float = Form(default=default_refiner_switch, description="Refiner Switch At", ge=0.1, le=1.0),
                 loras: str | None = Form(default=default_loras_json, description='Lora config in JSON. Format as [{"model_name": "sd_xl_offset_example-lora_1.0.safetensors", "weight": 0.5}]'),
                 advanced_params: str | None = Form(default=None, description="Advanced parameters in JSON"),
+                save_extension: str = Form(default="png", description="Save extension, png, jpg or webp"),
                 require_base64: bool = Form(default=False, description="Return base64 data of generated image"),
                 async_process: bool = Form(default=False, description="Set to true will run async and return job info for retrieve generataion result later"),
                 ):
@@ -227,7 +229,8 @@ class ImgUpscaleOrVaryRequest(Text2ImgRequest):
                    performance_selection=performance_selection, aspect_ratios_selection=aspect_ratios_selection,
                    image_number=image_number, image_seed=image_seed, sharpness=sharpness, guidance_scale=guidance_scale,
                    base_model_name=base_model_name, refiner_model_name=refiner_model_name, refiner_switch=refiner_switch,
-                   loras=loras_model, advanced_params=advanced_params_obj, require_base64=require_base64, async_process=async_process)
+                   loras=loras_model, advanced_params=advanced_params_obj, save_extension=save_extension,
+                   require_base64=require_base64, async_process=async_process)
 
 
 class ImgInpaintOrOutpaintRequest(Text2ImgRequest):
@@ -263,6 +266,7 @@ class ImgInpaintOrOutpaintRequest(Text2ImgRequest):
                 refiner_switch: float = Form(default=default_refiner_switch, description="Refiner Switch At", ge=0.1, le=1.0),
                 loras: str | None = Form(default=default_loras_json, description='Lora config in JSON. Format as [{"model_name": "sd_xl_offset_example-lora_1.0.safetensors", "weight": 0.5}]'),
                 advanced_params: str| None = Form(default=None, description="Advanced parameters in JSON"),
+                save_extension: str = Form(default="png", description="Save extension, png, jpg or webp"),
                 require_base64: bool = Form(default=False, description="Return base64 data of generated image"),
                 async_process: bool = Form(default=False, description="Set to true will run async and return job info for retrieve generataion result later"),
                 ):
@@ -282,7 +286,7 @@ class ImgInpaintOrOutpaintRequest(Text2ImgRequest):
                    performance_selection=performance_selection, aspect_ratios_selection=aspect_ratios_selection,
                    image_number=image_number, image_seed=image_seed, sharpness=sharpness, guidance_scale=guidance_scale,
                    base_model_name=base_model_name, refiner_model_name=refiner_model_name, refiner_switch=refiner_switch,
-                   loras=loras_model, advanced_params=advanced_params_obj, require_base64=require_base64, async_process=async_process)
+                   loras=loras_model, advanced_params=advanced_params_obj, save_extension=save_extension, require_base64=require_base64, async_process=async_process)
 
 
 class ImgPromptRequest(ImgInpaintOrOutpaintRequest):
@@ -344,6 +348,7 @@ class ImgPromptRequest(ImgInpaintOrOutpaintRequest):
                 refiner_switch: float = Form(default=default_refiner_switch, description="Refiner Switch At", ge=0.1, le=1.0),
                 loras: str | None = Form(default=default_loras_json, description='Lora config in JSON. Format as [{"model_name": "sd_xl_offset_example-lora_1.0.safetensors", "weight": 0.5}]'),
                 advanced_params: str| None = Form(default=None, description="Advanced parameters in JSON"),
+                save_extension: str = Form(default="png", description="Save extension, png, jpg or webp"),
                 require_base64: bool = Form(default=False, description="Return base64 data of generated image"),
                 async_process: bool = Form(default=False, description="Set to true will run async and return job info for retrieve generataion result later"),
                 ):
@@ -377,7 +382,7 @@ class ImgPromptRequest(ImgInpaintOrOutpaintRequest):
                    performance_selection=performance_selection, aspect_ratios_selection=aspect_ratios_selection,
                    image_number=image_number, image_seed=image_seed, sharpness=sharpness, guidance_scale=guidance_scale,
                    base_model_name=base_model_name, refiner_model_name=refiner_model_name, refiner_switch=refiner_switch,
-                   loras=loras_model, advanced_params=advanced_params_obj, require_base64=require_base64, async_process=async_process)
+                   loras=loras_model, advanced_params=advanced_params_obj, save_extension=save_extension, require_base64=require_base64, async_process=async_process)
 
 
 class GeneratedImageResult(BaseModel):
@@ -416,7 +421,7 @@ class AsyncJobResponse(BaseModel):
     job_progress: int = Field(description="Job running progress, 100 is for finished.")
     job_status: str | None = Field(None, description="Job running status in text")
     job_step_preview: str | None = Field(None, description="Preview image of generation steps at current time, as base64 image")
-    job_result: List[GeneratedImageResult | ImageGenerationResult] | None = Field(None, description="Job generation result")
+    job_result: List[GeneratedImageResult] | None = Field(None, description="Job generation result")
 
 
 class JobQueueInfo(BaseModel):
